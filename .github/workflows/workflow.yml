@@ -18,7 +18,7 @@ env:
   ROLE_ARN: arn:aws:iam::008971644917:role/monitorplus-oidc-role-gh
   S3_BUCKET: aws-glue-assets-008971644917-us-east-1
   S3_PREFIX: scripts/        # Debe terminar con "/"
-  SCRIPT_LOCAL_PATH: monitor-plus-etl-scb.py
+  SCRIPT_LOCAL_PATH: src/monitor-plus-etl-scb.py
   GLUE_JOB_NAME: monitor-plus-etl-scb
 
 jobs:
