@@ -1,0 +1,103 @@
+
+name: Deploy Glue Script
+
+on:
+  push:
+    branches: [ "development" ]
+    # Opcional: dispara solo si cambian archivos del directorio del script
+    paths:
+      - "src/**.py"
+      - ".github/workflows/workflow.yml"
+
+permissions:
+  id-token: write   # OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ROLE_ARN: arn:aws:iam::008971644917:role/monitorplus-oidc-role-gh
+  S3_BUCKET: aws-glue-assets-008971644917-us-east-1
+  S3_PREFIX: scripts/        # Debe terminar con "/"
+  SCRIPT_LOCAL_PATH: monitor-plus-etl-scb.py
+  GLUE_JOB_NAME: monitor-plus-etl-scb
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar variables
+        run: |
+          set -e
+          for v in AWS_REGION ROLE_ARN S3_BUCKET S3_PREFIX SCRIPT_LOCAL_PATH GLUE_JOB_NAME; do
+            if [ -z "${!v}" ]; then
+              echo "::error::Falta variable $v"
+              exit 1
+            fi
+          done
+          if [ ! -f "${SCRIPT_LOCAL_PATH}" ]; then
+            echo "::error::No se encontró ${SCRIPT_LOCAL_PATH} en el repo"
+            exit 1
+          fi
+
+      - name: Configurar credenciales AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: glue-deploy
+
+      - name: Subir script a S3
+        run: |
+          set -e
+          SCRIPT_FILE=$(basename "${SCRIPT_LOCAL_PATH}")
+          DEST_URI="s3://${S3_BUCKET}/${S3_PREFIX}${SCRIPT_FILE}"
+
+          echo "Subiendo ${SCRIPT_LOCAL_PATH} -> ${DEST_URI}"
+          aws s3 cp "${SCRIPT_LOCAL_PATH}" "${DEST_URI}" --only-show-errors
+
+          echo "SCRIPT_S3_URI=${DEST_URI}" >> $GITHUB_ENV
+
+      - name: Obtener definición actual del Job
+        run: |
+          set -e
+          aws glue get-job --job-name "${GLUE_JOB_NAME}" > job.json
+          cat job.json
+
+      - name: Actualizar ScriptLocation del Job
+        shell: python
+        run: |
+          import json
+          import os
+
+          with open("job.json", "r") as f:
+            job = json.load(f)["Job"]
+
+          # Actualiza solo el ScriptLocation, preservando lo demás
+          job["Command"]["ScriptLocation"] = os.environ["SCRIPT_S3_URI"]
+
+          job_update = {
+            "JobName": job["Name"],
+            "JobUpdate": {
+              "Role": job["Role"],
+              "Command": job["Command"],
+              "DefaultArguments": job.get("DefaultArguments", {}),
+              "ExecutionProperty": job.get("ExecutionProperty", {}),
+              "MaxRetries": job.get("MaxRetries", 0),
+              "Timeout": job.get("Timeout", 2880),
+              "GlueVersion": job.get("GlueVersion",""),
+              "NumberOfWorkers": job.get("NumberOfWorkers"),
+              "WorkerType": job.get("WorkerType")
+            }
+          }
+
+          with open("job-update.json", "w") as f:
+            json.dump(job_update, f)
+
+      - name: Enviar update del Job
+        run: |
+          set -e
+          aws glue update-job --cli-input-json file://job-update.json
